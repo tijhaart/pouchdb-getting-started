@@ -1,4 +1,4 @@
-(function() {
+(function(window) {
 
   'use strict';
 
@@ -8,8 +8,68 @@
 
   // EDITING STARTS HERE (you dont need to edit anything above this line)
 
-  var db = new Pouch('todos');
-  var remoteCouch = false;
+  var db = new PouchDB('todos');
+  var remoteCouch = 'http://localhost:5984/todos';
+
+  db.changes({
+    since: 'now',
+    live: true
+  }).on('change', showTodos);
+
+  function Todo(data, options) {
+    _.defaults(this, data, {
+      _id: new Date().toISOString(),
+      title: null,
+      completed: false
+    });
+    options = options || {};
+
+    this.db = options.db;
+  }
+  Todo.prototype = {
+    _id: void 0,
+    _rev: void 0,
+    title: void 0,
+    completed: false
+  };
+  Todo.prototype.getData = function() {
+    return {
+      _id: this._id,
+      _rev: this._rev,
+      title: this.title,
+      completed: this.completed
+    };
+  };
+  Todo.prototype.complete = function(complete) {
+    if (_(complete).isUndefined()) {
+      return this.completed;
+    } else {
+      this.completed = !!complete;
+    }
+  };
+  Todo.prototype.remove = function() {
+    return this.db.remove({_id: this._id, _rev: this._rev});
+  };
+  Todo.prototype.save = function() {
+    return this.db.put(this.getData());
+  };
+  Todo.prototype.toJSON = function() {
+    return JSON.stringify(this.getData());
+  };
+
+  Todo.create = function(data) {
+    return new Todo(data, {db: db});
+  };
+  Todo.list = function() {
+    var promise = db.allDocs({include_docs: true, descending: true});
+    promise.catch(function(err) {
+      console.error(err);
+    });
+    return promise;
+  };
+  Todo.parse = function(data) {
+    return this.create(data);
+  };
 
   db.info(function(err, info) {
     db.changes({since: info.update_seq, onChange: showTodos, continuous: true});
@@ -17,51 +77,57 @@
 
   // We have to create a new todo document and enter it in the database
   function addTodo(text) {
-    var todo = {
-      title: text,
-      completed: false
-    };
-    db.post(todo, function(err, result) {
-      if (!err) {
-        console.log('Successfully posted a todo!');
-      }
+    var todo = Todo.create({
+      title: text
     });
+
+    db.put(todo.getData()).then(function(res) {
+      console.debug(res);
+    }).catch(function(err) {
+      console.error(err);
+    })
   }
 
   // Show the current list of todos by reading them from the database
   function showTodos() {
-    db.allDocs({include_docs: true}, function(err, doc) {
+    Todo.list().then(function(doc) {
+      console.debug(doc);
       redrawTodosUI(doc.rows);
     });
   }
 
   function checkboxChanged(todo, event) {
-    todo.completed = event.target.checked;
-    db.put(todo);
+    console.debug(todo);
+    todo = Todo.parse(todo);
+    todo.complete(event.target.checked);
+    todo.save();
   }
 
   // User pressed the delete button for a todo, delete it
   function deleteButtonPressed(todo) {
-    db.remove(todo);
+    todo = Todo.parse(todo);
+    todo.remove();
   }
 
   // The input box when editing a todo has blurred, we should save
   // the new title or delete the todo if the title is empty
   function todoBlurred(todo, event) {
-    var trimmedText = event.target.value.trim();
-    if (!trimmedText) {
-      db.remove(todo);
+    todo = Todo.parse(todo);
+    var trimmed = event.target.value.trim();
+    if (_(trimmed).isEmpty()) {
+      todo.remove();
     } else {
-      todo.title = trimmedText;
-      db.put(todo);
+      todo.title = trimmed;
+      todo.save();
     }
   }
 
   // Initialise a sync with the remote server
   function sync() {
     syncDom.setAttribute('data-sync-state', 'syncing');
-    var pushRep = db.replicate.to(remoteCouch, {continuous: true, complete: syncError});
-    var pullRep = db.replicate.from(remoteCouch, {continuous: true, complete: syncError});
+    var opts = {live: true};
+    db.replicate.to(remoteCouch, opts, syncError);
+    db.replicate.from(remoteCouch, opts, syncError);
   }
 
   // EDITING STARTS HERE (you dont need to edit anything below this line)
@@ -156,4 +222,5 @@
     sync();
   }
 
-})();
+  window.Todo = Todo;
+})(window);
